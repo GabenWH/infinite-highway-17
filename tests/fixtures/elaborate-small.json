@@ -1,0 +1,12 @@
+{
+  "format": "elaborate-island-mesh",
+  "version": 1,
+  "generator": {"name": "Elaborate"},
+  "vertices": [
+    {"x": 0, "y": 0, "height": 0, "is_sea": false},
+    {"x": 2, "y": 0, "height": 10, "is_sea": false},
+    {"x": 2, "y": 2, "height": 20, "is_sea": false},
+    {"x": 0, "y": 2, "height": 10, "is_sea": false}
+  ],
+  "triangles": [[0, 1, 2], [0, 2, 3]]
+}
