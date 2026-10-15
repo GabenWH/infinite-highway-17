@@ -11,6 +11,14 @@ import struct
 from collections import Counter, deque
 from pathlib import Path
 
+if __package__:
+    from .coastal_road import build_coastal_road
+else:
+    # Support the documented `python3 tools/island_builder.py` command.
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from tools.coastal_road import build_coastal_road
+
 
 FORMAT_NAME = "elaborate-island-mesh"
 FORMAT_VERSION = 1
@@ -305,7 +313,8 @@ def _lua_number(value):
     return format(float(value), ".12g")
 
 
-def write_addon(document, output_dir, **options):
+def write_addon(document, output_dir, *, coastal_road=False, road_width=512,
+                road_elevation=768, **options):
     """Build a local InfMap2 addon directory from an exported mesh document."""
     output = Path(output_dir)
     if output.exists():
@@ -315,7 +324,6 @@ def write_addon(document, output_dir, **options):
             raise FileExistsError(f"output directory is not empty: {output}")
 
     metadata, samples = build_heightfield(document, **options)
-    binary = encode_heightfield(samples)
     # Even subdivisions align the centered chunk mesh and terrain queries.
     # 64 bounds the padded chunk mesh below GMod's 32768-vertex mesh limit.
     terrain_samples = min(64, max(2, 2 * math.ceil(
@@ -323,6 +331,13 @@ def write_addon(document, output_dir, **options):
     metadata['infmap_chunk_size'] = INFMAP_CHUNK_SIZE
     metadata['infmap_samples'] = terrain_samples
     metadata['infmap_sample_spacing'] = INFMAP_CHUNK_SIZE / terrain_samples
+    road = None
+    if coastal_road:
+        road, samples = build_coastal_road(metadata, samples,
+            terrain_spacing=metadata['infmap_sample_spacing'],
+            road_width=road_width, elevation=road_elevation)
+        metadata['coastal_road'] = {key: road[key] for key in ('width', 'elevation', 'length', 'materials')}
+    binary = encode_heightfield(samples)
     data_chunks = [binary[i:i + LUA_DATA_CHUNK_BYTES]
                    for i in range(0, len(binary), LUA_DATA_CHUNK_BYTES)]
     template_dir = Path(__file__).parent / "templates"
@@ -341,7 +356,15 @@ def write_addon(document, output_dir, **options):
         "@@DATA_CHUNKS@@": str(len(data_chunks)),
         "@@CHUNK_SIZE@@": str(INFMAP_CHUNK_SIZE),
         "@@TERRAIN_SAMPLES@@": str(terrain_samples),
+        "@@ROAD_SETUP@@": "",
     }
+    if road:
+        road_parts = math.ceil(len(road['sections']) / 64)
+        tokens['@@ROAD_SETUP@@'] = (
+            'local road_path = "infmap2/" .. MAP_NAME .. "/road.lua"\n'
+            'if SERVER then AddCSLuaFile(road_path) end\n'
+            'include("infmap2/" .. MAP_NAME .. "/road.lua")('
+            '"infmap2/" .. MAP_NAME .. "/road_data/", ' + str(road_parts) + ')')
     main_lua = main_template
     for token, value in tokens.items():
         main_lua = main_lua.replace(token, value)
@@ -352,6 +375,18 @@ def write_addon(document, output_dir, **options):
     map_dir.mkdir(parents=True, exist_ok=True)
     (map_dir / "main.lua").write_text(main_lua, encoding="utf-8")
     (map_dir / "terrain.bin").write_bytes(binary)
+    if road:
+        shutil.copyfile(template_dir / 'road.lua', map_dir / 'road.lua')
+        (map_dir / 'road.json').write_text(json.dumps(road, indent=2) + '\n', encoding='utf-8')
+        road_dir = map_dir / 'road_data'
+        road_dir.mkdir()
+        for start in range(0, len(road['sections']), 64):
+            rows = []
+            for i in range(start, min(start + 64, len(road['sections']))):
+                points = ['{' + ','.join(_lua_number(v) for v in p) + '}' for p in road['sections'][i]]
+                rows.append('{' + _lua_number(road['centerline'][i][3]) + ',' + ','.join(points) + '}')
+            (road_dir / f'part_{start // 64 + 1:04d}.lua').write_text(
+                'return {\n' + ',\n'.join(rows) + '\n}\n', encoding='ascii')
     # GMod automatically sends Lua via AddCSLuaFile, unlike arbitrary .bin
     # files. Fixed-width decimal escapes preserve all bytes, including NUL.
     data_dir = map_dir / "data"
@@ -375,6 +410,9 @@ def main(argv=None):
     parser.add_argument("--max-height", type=float, default=16384, help="height of the highest land sample above sea level (default: 16384)")
     parser.add_argument("--sea-floor", type=int, default=-4096, help="height of the sea floor and fallback beyond the exported mesh")
     parser.add_argument("--padding-cells", type=int, default=2, help="flat-seabed samples added around the island bounds")
+    parser.add_argument("--coastal-road", action="store_true", help="generate a continuous Highway 17 style coastal road")
+    parser.add_argument("--road-width", type=float, default=512, help="asphalt width in Hammer units (default: 512)")
+    parser.add_argument("--road-elevation", type=float, default=768, help="coastal contour elevation in Hammer units (default: 768)")
     args = parser.parse_args(argv)
 
     try:
@@ -387,6 +425,9 @@ def main(argv=None):
             max_height=args.max_height,
             sea_floor=args.sea_floor,
             padding_cells=args.padding_cells,
+            coastal_road=args.coastal_road,
+            road_width=args.road_width,
+            road_elevation=args.road_elevation,
         )
     except (OSError, ValueError) as error:
         parser.error(str(error))
@@ -394,6 +435,9 @@ def main(argv=None):
     metadata_path = output / "lua" / "infmap2" / "gm_inf_island" / "terrain.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     print(f"Built {output} ({metadata['width']} x {metadata['height']} samples, {metadata['sample_count'] * 2} terrain bytes).")
+    if 'coastal_road' in metadata:
+        length_km = metadata['coastal_road']['length'] * 0.01905 / 1000
+        print(f"Coastal highway: {length_km:.2f} km. Use ih17_road_start in GMod to reach it.")
     print("Copy InfMap2's gm_inf_bliss BSP to this addon's maps/gm_inf_island.bsp before launching the map.")
     return 0
 

@@ -61,6 +61,8 @@ local function height_function(x, y)
     return sample_height(x * 0.5, y * 0.5)
 end
 
+@@ROAD_SETUP@@
+
 if CLIENT then
     local water_material = Material("nature/water_coast01")
     local water_color = Color(255, 255, 255, 255)
