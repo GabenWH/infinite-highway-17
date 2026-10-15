@@ -65,6 +65,33 @@ class HeightfieldTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "degenerate"):
             self.build(mesh)
 
+    def test_irregular_sea_boundary_leaves_exterior_as_seabed(self):
+        mesh = square_mesh()
+        mesh['vertices'] = [
+            {'x': x, 'y': y, 'height': h, 'is_sea': sea}
+            for x, y, h, sea in [(0, 1, 0, True), (1, 0, 0, True),
+                                  (2, 1, 0, True), (1, 2, 0, True),
+                                  (1, 1, 10, False), (1, .5, 5, False)]
+        ]
+        mesh['triangles'] = [[0, 1, 5], [1, 2, 5], [2, 4, 5],
+                             [4, 0, 5], [0, 4, 3], [4, 2, 3]]
+        metadata, samples = self.build(mesh, grid_step=.25)
+        self.assertEqual(sample_height(metadata, samples, -1, -1), -100)
+        self.assertEqual(sample_height(metadata, samples, 0, 0), 20)
+
+    def test_enclosed_hole_is_not_filled_as_exterior_seabed(self):
+        mesh = square_mesh()
+        mesh['vertices'] = [
+            {'x': x, 'y': y, 'height': 0, 'is_sea': True}
+            for x, y in [(0, 0), (4, 0), (4, 4), (0, 4),
+                         (1, 1), (3, 1), (3, 3), (1, 3)]
+        ] + [{'x': 2, 'y': .5, 'height': 1, 'is_sea': False}]
+        mesh['triangles'] = [[0, 1, 8], [1, 5, 8], [5, 4, 8], [4, 0, 8],
+                             [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6],
+                             [3, 0, 4], [3, 4, 7]]
+        with self.assertRaisesRegex(ValueError, 'uncovered'):
+            self.build(mesh, world_width=4, grid_step=.5)
+
     def test_rejects_heightfields_over_the_sample_limit_before_allocating(self):
         with self.assertRaisesRegex(ValueError, "sample limit"):
             self.build(world_width=1_000_000, grid_step=1)

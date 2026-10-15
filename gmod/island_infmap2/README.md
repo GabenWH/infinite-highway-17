@@ -15,6 +15,12 @@ The builder writes this package from an Elaborate mesh. It contains the InfMap2 
 
 The copied BSP remains an InfMap2 base map. The island terrain is sampled from this addon's generated data at runtime. GMod's bundled Half-Life 2 content supplies the referenced `nature/grassfloor001a` and `nature/water_coast01` materials.
 
+## Multiplayer and Linux
+
+The server sends `lua/infmap2/gm_inf_island/data/part_*.lua` through `AddCSLuaFile`. Keep all of these generated files together with `main.lua`. Clients do not need a manually copied `terrain.bin`; InfMap2 itself and `maps/gm_inf_island.bsp` still need normal client installation or server distribution.
+
+All runtime filenames are lowercase. This map leaves InfMap2's optional grass-blade shader disabled. Compatibility was checked against InfMap2 0.41b source, including its doubled height-callback coordinates, but Linux gameplay has not been tested here.
+
 ## Highway 17 set-dressing references
 
 These Half-Life 2 models fit the rocky coast palette and can be spawned from GMod's prop browser:

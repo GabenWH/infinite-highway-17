@@ -8,12 +8,15 @@ import math
 import numbers
 import shutil
 import struct
+from collections import Counter, deque
 from pathlib import Path
 
 
 FORMAT_NAME = "elaborate-island-mesh"
 FORMAT_VERSION = 1
 MAX_SAMPLE_COUNT = 2_000_000
+INFMAP_CHUNK_SIZE = 20000
+LUA_DATA_CHUNK_BYTES = 2048
 
 
 def _finite_number(value, label):
@@ -190,9 +193,36 @@ def build_heightfield(
                 samples[offset] = value
                 covered[offset] = 1
 
+    # Elaborate's jagged outer mesh does not cover its rectangular bounds.
+    # Only accept missing cells connected to the exterior of a sea-bounded
+    # mesh. Interior holes and incomplete land boundaries remain errors.
+    edges = Counter(tuple(sorted((t[i], t[(i + 1) % 3])))
+                    for t in triangles for i in range(3))
+    boundary = {v for edge, count in edges.items() if count == 1 for v in edge}
+    exterior = bytearray(sample_count)
+    if boundary and all(vertices[v]['is_sea'] for v in boundary):
+        queue = deque()
+        def enqueue(index):
+            if not covered[index] and not exterior[index]:
+                exterior[index] = 1
+                queue.append(index)
+        for col in range(width):
+            enqueue(col)
+            enqueue((height - 1) * width + col)
+        for row in range(height):
+            enqueue(row * width)
+            enqueue(row * width + width - 1)
+        while queue:
+            index = queue.popleft()
+            row, col = divmod(index, width)
+            if row: enqueue(index - width)
+            if row + 1 < height: enqueue(index + width)
+            if col: enqueue(index - 1)
+            if col + 1 < width: enqueue(index + 1)
+
     for row in range(padding_cells, padding_cells + inner_height):
         for col in range(padding_cells, padding_cells + inner_width):
-            if not covered[row * width + col]:
+            if not covered[row * width + col] and not exterior[row * width + col]:
                 raise ValueError(f"uncovered interior sample at column {col}, row {row}")
 
     # Validate the full supported height range before bytes are produced.
@@ -286,6 +316,15 @@ def write_addon(document, output_dir, **options):
 
     metadata, samples = build_heightfield(document, **options)
     binary = encode_heightfield(samples)
+    # Even subdivisions align the centered chunk mesh and terrain queries.
+    # 64 bounds the padded chunk mesh below GMod's 32768-vertex mesh limit.
+    terrain_samples = min(64, max(2, 2 * math.ceil(
+        INFMAP_CHUNK_SIZE / min(metadata['step_x'], metadata['step_y']) / 2)))
+    metadata['infmap_chunk_size'] = INFMAP_CHUNK_SIZE
+    metadata['infmap_samples'] = terrain_samples
+    metadata['infmap_sample_spacing'] = INFMAP_CHUNK_SIZE / terrain_samples
+    data_chunks = [binary[i:i + LUA_DATA_CHUNK_BYTES]
+                   for i in range(0, len(binary), LUA_DATA_CHUNK_BYTES)]
     template_dir = Path(__file__).parent / "templates"
     project_root = Path(__file__).resolve().parents[1]
     main_template = (template_dir / "main.lua").read_text(encoding="utf-8")
@@ -299,6 +338,9 @@ def write_addon(document, output_dir, **options):
         "@@STEP_Y@@": _lua_number(metadata["step_y"]),
         "@@SEA_LEVEL@@": _lua_number(metadata["sea_level"]),
         "@@SEA_FLOOR@@": _lua_number(metadata["sea_floor"]),
+        "@@DATA_CHUNKS@@": str(len(data_chunks)),
+        "@@CHUNK_SIZE@@": str(INFMAP_CHUNK_SIZE),
+        "@@TERRAIN_SAMPLES@@": str(terrain_samples),
     }
     main_lua = main_template
     for token, value in tokens.items():
@@ -310,6 +352,14 @@ def write_addon(document, output_dir, **options):
     map_dir.mkdir(parents=True, exist_ok=True)
     (map_dir / "main.lua").write_text(main_lua, encoding="utf-8")
     (map_dir / "terrain.bin").write_bytes(binary)
+    # GMod automatically sends Lua via AddCSLuaFile, unlike arbitrary .bin
+    # files. Fixed-width decimal escapes preserve all bytes, including NUL.
+    data_dir = map_dir / "data"
+    data_dir.mkdir()
+    for index, chunk in enumerate(data_chunks, 1):
+        escaped = ''.join('\\%03d' % byte for byte in chunk)
+        (data_dir / f"part_{index:04d}.lua").write_text(
+            'return "' + escaped + '"\n', encoding='ascii')
     (map_dir / "terrain.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     shutil.copyfile(template_dir / "addon.json", output / "addon.json")
     shutil.copyfile(project_root / "gmod" / "island_infmap2" / "README.md", output / "README.md")

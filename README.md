@@ -16,7 +16,7 @@ The ocean is visual only; this version has no swimming or water physics. Its 28,
 ## Requirements
 
 - Garry's Mod and its default Half-Life 2 content.
-- The Def-Try InfMap2 addon installed separately.
+- The Def-Try InfMap2 addon installed separately (integration checked against its 0.41b source).
 - Python 3.8 or later for terrain conversion.
 - A browser with developer tools for the Elaborate export step.
 
@@ -39,17 +39,19 @@ Node.js 18 or later is only needed to run the exporter tests.
    python3 tools/island_builder.py /path/to/elaborate-island-mesh.json --output build/gm_inf_island
    ```
 
-   The output directory must be new or empty. The builder rejects malformed meshes, uncovered interior samples, invalid triangles, and height values outside signed 16-bit range.
+   The output directory must be new or empty. The builder rejects malformed meshes, uncovered interior samples, invalid triangles, and height values outside signed 16-bit range. Uncovered cells connected to the outside of a mesh with an entirely sea-marked boundary become seabed; enclosed holes still fail validation.
 
 4. Copy the generated `build/gm_inf_island` folder into your GMod `garrysmod/addons/` folder.
 5. Copy InfMap2's `maps/gm_inf_bliss.bsp` into the generated addon's `maps/` folder and name it `gm_inf_island.bsp`.
 6. Start GMod and run `map gm_inf_island` in the developer console.
 
-The BSP is a small InfMap2 base. It is not generated from the island mesh, and this project does not include a copied third-party BSP. InfMap2's [map instructions](https://github.com/Def-Try/infmap2#creating-your-own-infmap) require `inf` as the second underscore-separated word; `gm_inf_island` follows that convention. The addon reads terrain data relative to GMod's [`LUA` search path](https://wiki.facepunch.com/gmod/File_Search_Paths).
+The BSP is a small InfMap2 base. It is not generated from the island mesh, and this project does not include a copied third-party BSP. InfMap2's [map instructions](https://github.com/Def-Try/infmap2#creating-your-own-infmap) require `inf` as the second underscore-separated word; `gm_inf_island` follows that convention. The addon includes numbered Lua data files and registers them with `AddCSLuaFile` on the server. Joining clients receive the terrain through GMod's Lua download mechanism. InfMap2 and the BSP must also be installed or distributed to clients; this change only handles the island's height data. The raw `terrain.bin` is retained for inspection and offline previews, and is not needed by clients.
 
 ## Scale and resolution
 
-The default settings create a square island about 10 km across on a 2,048-unit grid. A square export produces 261 by 261 samples including the two-cell seabed border on each side. Change these options to trade detail for memory and build time:
+The default settings scale the longest mesh dimension to about 10 km on a 2,048-unit grid. A square export produces 261 by 261 samples including the two-cell seabed border on each side. Change these options to trade detail for memory and build time:
+
+The Lua callback compensates for InfMap2 0.41b passing doubled X/Y coordinates, so the requested width is the in-game width. Chunk subdivisions are selected from the exported grid spacing and rounded up to an even count. The default uses 10 subdivisions per 20,000-unit chunk (2,000-unit spacing), with one matching render/collision detail level. Subdivisions are capped at 64 to keep each padded terrain mesh below 32,768 vertices; data grids finer than 312.5 units therefore do not increase the rendered or collision detail. The effective spacing is recorded in `terrain.json`.
 
 The builder rejects heightfields above 2,000,000 samples before allocating their buffers. Increase the grid step or reduce the world width if a build exceeds that limit.
 
@@ -82,6 +84,8 @@ python3 -m unittest discover -s tests -v
 node --test tests/elaborate-export.test.js
 ```
 
+When `texlua` is installed, the Python suite also executes the generated Lua in simulated server/client environments, checking data delivery, coordinates, and sampling. Otherwise those tests are explicitly skipped. This does not test Source rendering or real network transport.
+
 Run a small end-to-end fixture build:
 
 ```bash
@@ -95,4 +99,4 @@ The fixture is only for checking the conversion pipeline; it is not a playable i
 
 ## Interchange format
 
-The exporter writes JSON with `format: "elaborate-island-mesh"`, `version: 1`, vertex coordinates/heights/sea flags, and indexed triangles. The builder samples that triangle mesh into row-major signed 16-bit little-endian heights. The generated InfMap2 callback loads the binary data once and bilinearly samples it; points outside the field return the configured seabed height.
+The exporter writes JSON with `format: "elaborate-island-mesh"`, `version: 1`, vertex coordinates/heights/sea flags, and indexed triangles. The builder samples that triangle mesh into row-major signed 16-bit little-endian heights. The generated InfMap2 callback reconstructs the binary data once from small Lua string chunks and bilinearly samples it; points outside the field return the configured seabed height.
